@@ -1,19 +1,9 @@
-Linux kernel
-============
+# Description
 
-There are several guides for kernel developers and users. These guides can
-be rendered in a number of formats, like HTML and PDF. Please read
-Documentation/admin-guide/README.rst first.
+Customized Linux Kernel for Redmi 9C to run containers.
 
-In order to build the documentation, use ``make htmldocs`` or
-``make pdfdocs``.  The formatted documentation can also be read online at:
+# Usage
 
-    https://www.kernel.org/doc/html/latest/
+You should run the `built-from-container.sh`, and it will build setup the right toolchain to compile the kernel.
 
-There are various text files in the Documentation/ subdirectory,
-several of them using the Restructured Text markup notation.
-See Documentation/00-INDEX for a list of what is contained in each file.
-
-Please read the Documentation/process/changes.rst file, as it contains the
-requirements for building and running the kernel, and information about
-the problems which may result by upgrading your kernel.
+Optionally you can apply the `show_kernel_flags.patch` to be sure that the configs are detected correctly on runtime. NOTE: this will pop-up a warning on boot, about something wrong with your phone.
