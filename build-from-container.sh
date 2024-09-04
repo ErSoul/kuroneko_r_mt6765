@@ -12,30 +12,4 @@ fi
 cd /opt/kuroneko_r_mt6765-upstream
 bash /opt/kuroneko_r_mt6765-upstream/prepare_compiler.sh
 
-cat << EOF > clang.sh
-#!/bin/bash
-
-make CC=$(pwd)/clang/bin/clang \
-LD=$(pwd)/clang/bin/ld.lld \
-NM=$(pwd)/clang/bin/llvm-nm \
-AR=$(pwd)/clang/bin/llvm-ar \
-OBJCOPY=$(pwd)/clang/bin/llvm-objcopy \
-OBJDUMP=$(pwd)/clang/bin/llvm-objdump \
-STRIP=$(pwd)/clang/bin/llvm-strip \
-CROSS_COMPILE_ARM32=$(pwd)/gcc-linaro-13.0.0-2022.10-x86_64_arm-linux-gnueabihf/bin/arm-linux-gnueabihf- \
-CROSS_COMPILE=$(pwd)/gcc-linaro-13.0.0-2022.10-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu- \
-O=out ARCH=arm64 blossom_defconfig
-
-make CC=$(pwd)/clang/bin/clang \
-LD=$(pwd)/clang/bin/ld.lld \
-NM=$(pwd)/clang/bin/llvm-nm \
-AR=$(pwd)/clang/bin/llvm-ar \
-OBJCOPY=$(pwd)/clang/bin/llvm-objcopy \
-OBJDUMP=$(pwd)/clang/bin/llvm-objdump \
-STRIP=$(pwd)/clang/bin/llvm-strip \
-CROSS_COMPILE_ARM32=$(pwd)/gcc-linaro-13.0.0-2022.10-x86_64_arm-linux-gnueabihf/bin/arm-linux-gnueabihf- \
-CROSS_COMPILE=$(pwd)/gcc-linaro-13.0.0-2022.10-x86_64_aarch64-linux-gnu/bin/aarch64-linux-gnu- \
-O=out ARCH=arm64 
-EOF
-
 sh clang.sh
