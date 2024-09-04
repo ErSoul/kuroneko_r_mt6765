@@ -1,0 +1,13 @@
+diff --git a/kernel/Makefile b/kernel/Makefile
+index feca56f01..a0a4ef260 100644
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -133,7 +133,7 @@ obj-$(CONFIG_RSEQ) += rseq.o
+ $(obj)/configs.o: $(obj)/config_data.h
+ 
+ targets += config_data.gz
+-$(obj)/config_data.gz: arch/arm64/configs/blossom_stock_defconfig FORCE
++$(obj)/config_data.gz: $(KCONFIG_CONFIG) FORCE
+ 	$(call if_changed,gzip)
+ 
+       filechk_ikconfiggz = (echo "static const char kernel_config_data[] __used = MAGIC_START"; cat $< | scripts/bin2c; echo "MAGIC_END;")
