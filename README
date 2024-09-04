@@ -1,9 +1,0 @@
-# Description
-
-Customized Linux Kernel for Redmi 9C to run containers.
-
-# Usage
-
-You should run the `built-from-container.sh`, and it will build setup the right toolchain to compile the kernel.
-
-Optionally you can apply the `show_kernel_flags.patch` to be sure that the configs are detected correctly on runtime. NOTE: this will pop-up a warning on boot, about something wrong with your phone.
