@@ -26,35 +26,24 @@
 #include <linux/slab.h>
 #include <linux/fs.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/eisa_eeprom.h>
 
 #define 	EISA_EEPROM_MINOR 241
 
-static loff_t eisa_eeprom_llseek(struct file *file, loff_t offset, int origin )
+static loff_t eisa_eeprom_llseek(struct file *file, loff_t offset, int origin)
 {
-	switch (origin) {
-	  case 0:
-		/* nothing to do */
-		break;
-	  case 1:
-		offset += file->f_pos;
-		break;
-	  case 2:
-		offset += HPEE_MAX_LENGTH;
-		break;
-	}
-	return (offset >= 0 && offset < HPEE_MAX_LENGTH) ? (file->f_pos = offset) : -EINVAL;
+	return fixed_size_llseek(file, offset, origin, HPEE_MAX_LENGTH);
 }
 
 static ssize_t eisa_eeprom_read(struct file * file,
-			      char *buf, size_t count, loff_t *ppos )
+			      char __user *buf, size_t count, loff_t *ppos )
 {
 	unsigned char *tmp;
 	ssize_t ret;
 	int i;
 	
-	if (*ppos >= HPEE_MAX_LENGTH)
+	if (*ppos < 0 || *ppos >= HPEE_MAX_LENGTH)
 		return 0;
 	
 	count = *ppos + count < HPEE_MAX_LENGTH ? count : HPEE_MAX_LENGTH - *ppos;
@@ -74,16 +63,9 @@ static ssize_t eisa_eeprom_read(struct file * file,
 	return ret;
 }
 
-static int eisa_eeprom_ioctl(struct inode *inode, struct file *file, 
-			   unsigned int cmd,
-			   unsigned long arg)
-{
-	return -ENOTTY;
-}
-
 static int eisa_eeprom_open(struct inode *inode, struct file *file)
 {
-	if (file->f_mode & 2)
+	if (file->f_mode & FMODE_WRITE)
 		return -EINVAL;
    
 	return 0;
@@ -97,11 +79,10 @@ static int eisa_eeprom_release(struct inode *inode, struct file *file)
 /*
  *	The various file operations we support.
  */
-static struct file_operations eisa_eeprom_fops = {
+static const struct file_operations eisa_eeprom_fops = {
 	.owner =	THIS_MODULE,
 	.llseek =	eisa_eeprom_llseek,
 	.read =		eisa_eeprom_read,
-	.ioctl =	eisa_eeprom_ioctl,
 	.open =		eisa_eeprom_open,
 	.release =	eisa_eeprom_release,
 };
@@ -125,7 +106,7 @@ static int __init eisa_eeprom_init(void)
 		return retval;
 	}
 
-	printk(KERN_INFO "EISA EEPROM at 0x%p\n", eisa_eeprom_addr);
+	printk(KERN_INFO "EISA EEPROM at 0x%px\n", eisa_eeprom_addr);
 	return 0;
 }
 

@@ -1,31 +1,34 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Implementation of the hash table type.
  *
- * Author : Stephen Smalley, <sds@epoch.ncsc.mil>
+ * Author : Stephen Smalley, <sds@tycho.nsa.gov>
  */
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/errno.h>
+#include <linux/sched.h>
 #include "hashtab.h"
 
-struct hashtab *hashtab_create(u32 (*hash_value)(struct hashtab *h, void *key),
-                               int (*keycmp)(struct hashtab *h, void *key1, void *key2),
-                               u32 size)
+static struct kmem_cache *hashtab_node_cachep;
+
+struct hashtab *hashtab_create(u32 (*hash_value)(struct hashtab *h, const void *key),
+			       int (*keycmp)(struct hashtab *h, const void *key1, const void *key2),
+			       u32 size)
 {
 	struct hashtab *p;
 	u32 i;
 
-	p = kmalloc(sizeof(*p), GFP_KERNEL);
-	if (p == NULL)
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	if (!p)
 		return p;
 
-	memset(p, 0, sizeof(*p));
 	p->size = size;
 	p->nel = 0;
 	p->hash_value = hash_value;
 	p->keycmp = keycmp;
-	p->htable = kmalloc(sizeof(*(p->htable)) * size, GFP_KERNEL);
-	if (p->htable == NULL) {
+	p->htable = kmalloc_array(size, sizeof(*p->htable), GFP_KERNEL);
+	if (!p->htable) {
 		kfree(p);
 		return NULL;
 	}
@@ -41,6 +44,8 @@ int hashtab_insert(struct hashtab *h, void *key, void *datum)
 	u32 hvalue;
 	struct hashtab_node *prev, *cur, *newnode;
 
+	cond_resched();
+
 	if (!h || h->nel == HASHTAB_MAX_NODES)
 		return -EINVAL;
 
@@ -55,10 +60,9 @@ int hashtab_insert(struct hashtab *h, void *key, void *datum)
 	if (cur && (h->keycmp(h, key, cur->key) == 0))
 		return -EEXIST;
 
-	newnode = kmalloc(sizeof(*newnode), GFP_KERNEL);
-	if (newnode == NULL)
+	newnode = kmem_cache_zalloc(hashtab_node_cachep, GFP_KERNEL);
+	if (!newnode)
 		return -ENOMEM;
-	memset(newnode, 0, sizeof(*newnode));
 	newnode->key = key;
 	newnode->datum = datum;
 	if (prev) {
@@ -73,7 +77,7 @@ int hashtab_insert(struct hashtab *h, void *key, void *datum)
 	return 0;
 }
 
-void *hashtab_search(struct hashtab *h, void *key)
+void *hashtab_search(struct hashtab *h, const void *key)
 {
 	u32 hvalue;
 	struct hashtab_node *cur;
@@ -83,10 +87,10 @@ void *hashtab_search(struct hashtab *h, void *key)
 
 	hvalue = h->hash_value(h, key);
 	cur = h->htable[hvalue];
-	while (cur != NULL && h->keycmp(h, key, cur->key) > 0)
+	while (cur && h->keycmp(h, key, cur->key) > 0)
 		cur = cur->next;
 
-	if (cur == NULL || (h->keycmp(h, key, cur->key) != 0))
+	if (!cur || (h->keycmp(h, key, cur->key) != 0))
 		return NULL;
 
 	return cur->datum;
@@ -102,10 +106,10 @@ void hashtab_destroy(struct hashtab *h)
 
 	for (i = 0; i < h->size; i++) {
 		cur = h->htable[i];
-		while (cur != NULL) {
+		while (cur) {
 			temp = cur;
 			cur = cur->next;
-			kfree(temp);
+			kmem_cache_free(hashtab_node_cachep, temp);
 		}
 		h->htable[i] = NULL;
 	}
@@ -129,7 +133,7 @@ int hashtab_map(struct hashtab *h,
 
 	for (i = 0; i < h->size; i++) {
 		cur = h->htable[i];
-		while (cur != NULL) {
+		while (cur) {
 			ret = apply(cur->key, cur->datum, args);
 			if (ret)
 				return ret;
@@ -147,7 +151,7 @@ void hashtab_stat(struct hashtab *h, struct hashtab_info *info)
 
 	slots_used = 0;
 	max_chain_len = 0;
-	for (slots_used = max_chain_len = i = 0; i < h->size; i++) {
+	for (i = 0; i < h->size; i++) {
 		cur = h->htable[i];
 		if (cur) {
 			slots_used++;
@@ -164,4 +168,11 @@ void hashtab_stat(struct hashtab *h, struct hashtab_info *info)
 
 	info->slots_used = slots_used;
 	info->max_chain_len = max_chain_len;
+}
+
+void __init hashtab_cache_init(void)
+{
+		hashtab_node_cachep = kmem_cache_create("hashtab_node",
+			sizeof(struct hashtab_node),
+			0, SLAB_PANIC, NULL);
 }

@@ -1,0 +1,15 @@
+config ANDROID_DEFAULT_SETTING
+	bool "Select android base config by default"
+	help
+	  This option enables the android base config by default which
+	  definded in android-base.config and android-base-conditional.xml
+	  Say Y here if the project is for android product.
+	  If unsure, say N.
+
+config MTK_ANDROID_DEFAULT_SETTING
+	bool "Select MTK android common setting by default"
+	help
+	  This adds some MTK specific config by default which is
+	  not defined in ANDROID_DEFAULT_SETTING.
+	  Say Y here for MTK android product (e.g. smart phone)
+	  If unsure, say N.

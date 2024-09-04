@@ -3,16 +3,16 @@
  *
  *   This program is free software;  you can redistribute it and/or modify
  *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or 
+ *   the Free Software Foundation; either version 2 of the License, or
  *   (at your option) any later version.
- * 
+ *
  *   This program is distributed in the hope that it will be useful,
  *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
  *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
  *   the GNU General Public License for more details.
  *
  *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software 
+ *   along with this program;  if not, write to the Free Software
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
@@ -21,18 +21,18 @@
  *
  * note: file system in transition to aggregate/fileset:
  *
- * file system mount is interpreted as the mount of aggregate, 
- * if not already mounted, and mount of the single/only fileset in 
+ * file system mount is interpreted as the mount of aggregate,
+ * if not already mounted, and mount of the single/only fileset in
  * the aggregate;
  *
  * a file system/aggregate is represented by an internal inode
  * (aka mount inode) initialized with aggregate superblock;
- * each vfs represents a fileset, and points to its "fileset inode 
+ * each vfs represents a fileset, and points to its "fileset inode
  * allocation map inode" (aka fileset inode):
- * (an aggregate itself is structured recursively as a filset: 
- * an internal vfs is constructed and points to its "fileset inode 
- * allocation map inode" (aka aggregate inode) where each inode 
- * represents a fileset inode) so that inode number is mapped to 
+ * (an aggregate itself is structured recursively as a filset:
+ * an internal vfs is constructed and points to its "fileset inode
+ * allocation map inode" (aka aggregate inode) where each inode
+ * represents a fileset inode) so that inode number is mapped to
  * on-disk inode in uniform way at both aggregate and fileset level;
  *
  * each vnode/inode of a fileset is linked to its vfs (to facilitate
@@ -41,7 +41,7 @@
  * per aggregate information, e.g., block size, etc.) as well as
  * its file set inode.
  *
- *   aggregate 
+ *   aggregate
  *   ipmnt
  *   mntvfs -> fileset ipimap+ -> aggregate ipbmap -> aggregate ipaimap;
  *             fileset vfs     -> vp(1) <-> ... <-> vp(n) <->vproot;
@@ -49,6 +49,7 @@
 
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
+#include <linux/log2.h>
 
 #include "jfs_incore.h"
 #include "jfs_filsys.h"
@@ -80,7 +81,7 @@ static int logMOUNT(struct super_block *sb);
  */
 int jfs_mount(struct super_block *sb)
 {
-	int rc = 0;		/* Return code          */
+	int rc = 0;		/* Return code */
 	struct jfs_sb_info *sbi = JFS_SBI(sb);
 	struct inode *ipaimap = NULL;
 	struct inode *ipaimap2 = NULL;
@@ -88,18 +89,18 @@ int jfs_mount(struct super_block *sb)
 	struct inode *ipbmap = NULL;
 
 	/*
-	 * read/validate superblock 
+	 * read/validate superblock
 	 * (initialize mount inode from the superblock)
 	 */
 	if ((rc = chkSuper(sb))) {
-		goto errout20;
+		goto out;
 	}
 
 	ipaimap = diReadSpecial(sb, AGGREGATE_I, 0);
 	if (ipaimap == NULL) {
-		jfs_err("jfs_mount: Faild to read AGGREGATE_I");
+		jfs_err("jfs_mount: Failed to read AGGREGATE_I");
 		rc = -EIO;
-		goto errout20;
+		goto out;
 	}
 	sbi->ipaimap = ipaimap;
 
@@ -110,7 +111,7 @@ int jfs_mount(struct super_block *sb)
 	 */
 	if ((rc = diMount(ipaimap))) {
 		jfs_err("jfs_mount: diMount(ipaimap) failed w/rc = %d", rc);
-		goto errout21;
+		goto err_ipaimap;
 	}
 
 	/*
@@ -119,7 +120,7 @@ int jfs_mount(struct super_block *sb)
 	ipbmap = diReadSpecial(sb, BMAP_I, 0);
 	if (ipbmap == NULL) {
 		rc = -EIO;
-		goto errout22;
+		goto err_umount_ipaimap;
 	}
 
 	jfs_info("jfs_mount: ipbmap:0x%p", ipbmap);
@@ -131,7 +132,7 @@ int jfs_mount(struct super_block *sb)
 	 */
 	if ((rc = dbMount(ipbmap))) {
 		jfs_err("jfs_mount: dbMount failed w/rc = %d", rc);
-		goto errout22;
+		goto err_ipbmap;
 	}
 
 	/*
@@ -147,10 +148,10 @@ int jfs_mount(struct super_block *sb)
 	 */
 	if ((sbi->mntflag & JFS_BAD_SAIT) == 0) {
 		ipaimap2 = diReadSpecial(sb, AGGREGATE_I, 1);
-		if (ipaimap2 == 0) {
-			jfs_err("jfs_mount: Faild to read AGGREGATE_I");
+		if (!ipaimap2) {
+			jfs_err("jfs_mount: Failed to read AGGREGATE_I");
 			rc = -EIO;
-			goto errout35;
+			goto err_umount_ipbmap;
 		}
 		sbi->ipaimap2 = ipaimap2;
 
@@ -162,14 +163,14 @@ int jfs_mount(struct super_block *sb)
 		if ((rc = diMount(ipaimap2))) {
 			jfs_err("jfs_mount: diMount(ipaimap2) failed, rc = %d",
 				rc);
-			goto errout35;
+			goto err_ipaimap2;
 		}
 	} else
 		/* Secondary aggregate inode table is not valid */
 		sbi->ipaimap2 = NULL;
 
 	/*
-	 *      mount (the only/single) fileset
+	 *	mount (the only/single) fileset
 	 */
 	/*
 	 * open fileset inode allocation map (aka fileset inode)
@@ -179,7 +180,7 @@ int jfs_mount(struct super_block *sb)
 		jfs_err("jfs_mount: Failed to read FILESYSTEM_I");
 		/* open fileset secondary inode allocation map */
 		rc = -EIO;
-		goto errout40;
+		goto err_umount_ipaimap2;
 	}
 	jfs_info("jfs_mount: ipimap:0x%p", ipimap);
 
@@ -189,41 +190,34 @@ int jfs_mount(struct super_block *sb)
 	/* initialize fileset inode allocation map */
 	if ((rc = diMount(ipimap))) {
 		jfs_err("jfs_mount: diMount failed w/rc = %d", rc);
-		goto errout41;
+		goto err_ipimap;
 	}
 
-	goto out;
+	return rc;
 
 	/*
-	 *      unwind on error
+	 *	unwind on error
 	 */
-      errout41:		/* close fileset inode allocation map inode */
+err_ipimap:
+	/* close fileset inode allocation map inode */
 	diFreeSpecial(ipimap);
-
-      errout40:		/* fileset closed */
-
+err_umount_ipaimap2:
 	/* close secondary aggregate inode allocation map */
-	if (ipaimap2) {
+	if (ipaimap2)
 		diUnmount(ipaimap2, 1);
+err_ipaimap2:
+	/* close aggregate inodes */
+	if (ipaimap2)
 		diFreeSpecial(ipaimap2);
-	}
-
-      errout35:
-
-	/* close aggregate block allocation map */
+err_umount_ipbmap:	/* close aggregate block allocation map */
 	dbUnmount(ipbmap, 1);
+err_ipbmap:		/* close aggregate inodes */
 	diFreeSpecial(ipbmap);
-
-      errout22:		/* close aggregate inode allocation map */
-
+err_umount_ipaimap:	/* close aggregate inode allocation map */
 	diUnmount(ipaimap, 1);
-
-      errout21:		/* close aggregate inodes */
+err_ipaimap:		/* close aggregate inodes */
 	diFreeSpecial(ipaimap);
-      errout20:		/* aggregate closed */
-
-      out:
-
+out:
 	if (rc)
 		jfs_err("Mount JFS Failure: %d", rc);
 
@@ -238,7 +232,7 @@ int jfs_mount(struct super_block *sb)
  */
 int jfs_mount_rw(struct super_block *sb, int remount)
 {
-	struct jfs_sb_info *sbi = JFS_SBI(sb);  
+	struct jfs_sb_info *sbi = JFS_SBI(sb);
 	int rc;
 
 	/*
@@ -285,18 +279,13 @@ int jfs_mount_rw(struct super_block *sb, int remount)
 	 */
 	logMOUNT(sb);
 
-	/*
-	 * Set page cache allocation policy
-	 */
-	mapping_set_gfp_mask(sb->s_bdev->bd_inode->i_mapping, GFP_NOFS);
-
 	return rc;
 }
 
 /*
  *	chkSuper()
  *
- * validate the superblock of the file system to be mounted and 
+ * validate the superblock of the file system to be mounted and
  * get the file system parameters.
  *
  * returns
@@ -367,7 +356,7 @@ static int chkSuper(struct super_block *sb)
 
 	/* validate fs state */
 	if (j_sb->s_state != cpu_to_le32(FM_CLEAN) &&
-	    !(sb->s_flags & MS_RDONLY)) {
+	    !sb_rdonly(sb)) {
 		jfs_err("jfs_mount: Mount Failure: File System Dirty.");
 		rc = -EINVAL;
 		goto out;
@@ -382,6 +371,15 @@ static int chkSuper(struct super_block *sb)
 	 */
 	sbi->bsize = bsize;
 	sbi->l2bsize = le16_to_cpu(j_sb->s_l2bsize);
+
+	/* check some fields for possible corruption */
+	if (sbi->l2bsize != ilog2((u32)bsize) ||
+	    j_sb->pad != 0 ||
+	    le32_to_cpu(j_sb->s_state) > FM_STATE_MAX) {
+		rc = -EINVAL;
+		jfs_err("jfs_mount: Mount Failure: superblock is corrupt!");
+		goto out;
+	}
 
 	/*
 	 * For now, ignore s_pbsize, l2bfactor.  All I/O going through buffer
@@ -431,7 +429,7 @@ int updateSuper(struct super_block *sb, uint state)
 			jfs_err("updateSuper: bad state");
 	} else if (sbi->state == FM_DIRTY)
 		return 0;
-	
+
 	if ((rc = readSuper(sb, &bh)))
 		return rc;
 
@@ -491,9 +489,9 @@ int readSuper(struct super_block *sb, struct buffer_head **bpp)
  * for this file system past this point in log.
  * it is harmless if mount fails.
  *
- * note: MOUNT record is at aggregate level, not at fileset level, 
+ * note: MOUNT record is at aggregate level, not at fileset level,
  * since log records of previous mounts of a fileset
- * (e.g., AFTER record of extent allocation) have to be processed 
+ * (e.g., AFTER record of extent allocation) have to be processed
  * to update block allocation map at aggregate level.
  */
 static int logMOUNT(struct super_block *sb)

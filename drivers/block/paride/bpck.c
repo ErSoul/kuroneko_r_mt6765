@@ -347,7 +347,7 @@ static int bpck_test_proto( PIA *pi, char * scratch, int verbose )
 
 static void bpck_read_eeprom ( PIA *pi, char * buf )
 
-{       int i,j,k,n,p,v,f, om, od;
+{       int i, j, k, p, v, f, om, od;
 
 	bpck_force_spp(pi);
 
@@ -356,7 +356,6 @@ static void bpck_read_eeprom ( PIA *pi, char * buf )
 
 	bpck_connect(pi);
 	
-	n = 0;
 	WR(4,0);
 	for (i=0;i<64;i++) {
 	    WR(6,8);  
@@ -464,12 +463,12 @@ static struct pi_protocol bpck = {
 
 static int __init bpck_init(void)
 {
-	return pi_register(&bpck)-1;
+	return paride_register(&bpck);
 }
 
 static void __exit bpck_exit(void)
 {
-	pi_unregister(&bpck);
+	paride_unregister(&bpck);
 }
 
 MODULE_LICENSE("GPL");

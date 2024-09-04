@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Mips Jazz DMA controller support
  * Copyright (C) 1995, 1996 by Andreas Busse
@@ -9,15 +10,18 @@
  */
 #include <linux/kernel.h>
 #include <linux/init.h>
-#include <linux/module.h>
+#include <linux/export.h>
 #include <linux/errno.h>
 #include <linux/mm.h>
 #include <linux/bootmem.h>
 #include <linux/spinlock.h>
+#include <linux/gfp.h>
+#include <linux/dma-direct.h>
+#include <linux/dma-noncoherent.h>
 #include <asm/mipsregs.h>
 #include <asm/jazz.h>
 #include <asm/io.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/dma.h>
 #include <asm/jazzdma.h>
 #include <asm/pgtable.h>
@@ -27,7 +31,7 @@
  */
 #define CONF_DEBUG_VDMA 0
 
-static unsigned long vdma_pagetable_start;
+static VDMA_PGTBL_ENTRY *pgtbl;
 
 static DEFINE_SPINLOCK(vdma_lock);
 
@@ -46,7 +50,6 @@ static int debuglvl = 3;
  */
 static inline void vdma_pgtbl_init(void)
 {
-	VDMA_PGTBL_ENTRY *pgtbl = (VDMA_PGTBL_ENTRY *) vdma_pagetable_start;
 	unsigned long paddr = 0;
 	int i;
 
@@ -60,18 +63,18 @@ static inline void vdma_pgtbl_init(void)
 /*
  * Initialize the Jazz R4030 dma controller
  */
-void __init vdma_init(void)
+static int __init vdma_init(void)
 {
 	/*
-	 * Allocate 32k of memory for DMA page tables.  This needs to be page
+	 * Allocate 32k of memory for DMA page tables.	This needs to be page
 	 * aligned and should be uncached to avoid cache flushing after every
 	 * update.
 	 */
-	vdma_pagetable_start = alloc_bootmem_low_pages(VDMA_PGTBL_SIZE);
-	if (!vdma_pagetable_start)
-		BUG();
-	dma_cache_wback_inv(vdma_pagetable_start, VDMA_PGTBL_SIZE);
-	vdma_pagetable_start = KSEG1ADDR(vdma_pagetable_start);
+	pgtbl = (VDMA_PGTBL_ENTRY *)__get_free_pages(GFP_KERNEL | GFP_DMA,
+						    get_order(VDMA_PGTBL_SIZE));
+	BUG_ON(!pgtbl);
+	dma_cache_wback_inv((unsigned long)pgtbl, VDMA_PGTBL_SIZE);
+	pgtbl = (VDMA_PGTBL_ENTRY *)CKSEG1ADDR((unsigned long)pgtbl);
 
 	/*
 	 * Clear the R4030 translation table
@@ -79,19 +82,20 @@ void __init vdma_init(void)
 	vdma_pgtbl_init();
 
 	r4030_write_reg32(JAZZ_R4030_TRSTBL_BASE,
-			  CPHYSADDR(vdma_pagetable_start));
+			  CPHYSADDR((unsigned long)pgtbl));
 	r4030_write_reg32(JAZZ_R4030_TRSTBL_LIM, VDMA_PGTBL_SIZE);
 	r4030_write_reg32(JAZZ_R4030_TRSTBL_INV, 0);
 
-	printk("VDMA: R4030 DMA pagetables initialized.\n");
+	printk(KERN_INFO "VDMA: R4030 DMA pagetables initialized.\n");
+	return 0;
 }
+arch_initcall(vdma_init);
 
 /*
  * Allocate DMA pagetables using a simple first-fit algorithm
  */
 unsigned long vdma_alloc(unsigned long paddr, unsigned long size)
 {
-	VDMA_PGTBL_ENTRY *entry = (VDMA_PGTBL_ENTRY *) vdma_pagetable_start;
 	int first, last, pages, frame, i;
 	unsigned long laddr, flags;
 
@@ -113,10 +117,10 @@ unsigned long vdma_alloc(unsigned long paddr, unsigned long size)
 	/*
 	 * Find free chunk
 	 */
-	pages = (size + 4095) >> 12;	/* no. of pages to allocate */
+	pages = VDMA_PAGE(paddr + size) - VDMA_PAGE(paddr) + 1;
 	first = 0;
 	while (1) {
-		while (entry[first].owner != VDMA_PAGE_EMPTY &&
+		while (pgtbl[first].owner != VDMA_PAGE_EMPTY &&
 		       first < VDMA_PGTBL_ENTRIES) first++;
 		if (first + pages > VDMA_PGTBL_ENTRIES) {	/* nothing free */
 			spin_unlock_irqrestore(&vdma_lock, flags);
@@ -124,12 +128,13 @@ unsigned long vdma_alloc(unsigned long paddr, unsigned long size)
 		}
 
 		last = first + 1;
-		while (entry[last].owner == VDMA_PAGE_EMPTY
+		while (pgtbl[last].owner == VDMA_PAGE_EMPTY
 		       && last - first < pages)
 			last++;
 
 		if (last - first == pages)
 			break;	/* found */
+		first = last + 1;
 	}
 
 	/*
@@ -139,8 +144,8 @@ unsigned long vdma_alloc(unsigned long paddr, unsigned long size)
 	frame = paddr & ~(VDMA_PAGESIZE - 1);
 
 	for (i = first; i < last; i++) {
-		entry[i].frame = frame;
-		entry[i].owner = laddr;
+		pgtbl[i].frame = frame;
+		pgtbl[i].owner = laddr;
 		frame += VDMA_PAGESIZE;
 	}
 
@@ -159,10 +164,10 @@ unsigned long vdma_alloc(unsigned long paddr, unsigned long size)
 			printk("%08x ", i << 12);
 		printk("\nPADDR: ");
 		for (i = first; i < last; i++)
-			printk("%08x ", entry[i].frame);
+			printk("%08x ", pgtbl[i].frame);
 		printk("\nOWNER: ");
 		for (i = first; i < last; i++)
-			printk("%08x ", entry[i].owner);
+			printk("%08x ", pgtbl[i].owner);
 		printk("\n");
 	}
 
@@ -180,7 +185,6 @@ EXPORT_SYMBOL(vdma_alloc);
  */
 int vdma_free(unsigned long laddr)
 {
-	VDMA_PGTBL_ENTRY *pgtbl = (VDMA_PGTBL_ENTRY *) vdma_pagetable_start;
 	int i;
 
 	i = laddr >> 12;
@@ -192,7 +196,7 @@ int vdma_free(unsigned long laddr)
 		return -1;
 	}
 
-	while (pgtbl[i].owner == laddr && i < VDMA_PGTBL_ENTRIES) {
+	while (i < VDMA_PGTBL_ENTRIES && pgtbl[i].owner == laddr) {
 		pgtbl[i].owner = VDMA_PAGE_EMPTY;
 		i++;
 	}
@@ -212,27 +216,24 @@ EXPORT_SYMBOL(vdma_free);
  */
 int vdma_remap(unsigned long laddr, unsigned long paddr, unsigned long size)
 {
-	VDMA_PGTBL_ENTRY *pgtbl =
-	    (VDMA_PGTBL_ENTRY *) vdma_pagetable_start;
-	int first, pages, npages;
+	int first, pages;
 
 	if (laddr > 0xffffff) {
 		if (vdma_debug)
 			printk
 			    ("vdma_map: Invalid logical address: %08lx\n",
 			     laddr);
-		return -EINVAL;	/* invalid logical address */
+		return -EINVAL; /* invalid logical address */
 	}
 	if (paddr > 0x1fffffff) {
 		if (vdma_debug)
 			printk
 			    ("vdma_map: Invalid physical address: %08lx\n",
 			     paddr);
-		return -EINVAL;	/* invalid physical address */
+		return -EINVAL; /* invalid physical address */
 	}
 
-	npages = pages =
-	    (((paddr & (VDMA_PAGESIZE - 1)) + size) >> 12) + 1;
+	pages = (((paddr & (VDMA_PAGESIZE - 1)) + size) >> 12) + 1;
 	first = laddr >> 12;
 	if (vdma_debug)
 		printk("vdma_remap: first=%x, pages=%x\n", first, pages);
@@ -288,8 +289,6 @@ unsigned long vdma_phys2log(unsigned long paddr)
 {
 	int i;
 	int frame;
-	VDMA_PGTBL_ENTRY *pgtbl =
-	    (VDMA_PGTBL_ENTRY *) vdma_pagetable_start;
 
 	frame = paddr & ~(VDMA_PAGESIZE - 1);
 
@@ -311,9 +310,6 @@ EXPORT_SYMBOL(vdma_phys2log);
  */
 unsigned long vdma_log2phys(unsigned long laddr)
 {
-	VDMA_PGTBL_ENTRY *pgtbl =
-	    (VDMA_PGTBL_ENTRY *) vdma_pagetable_start;
-
 	return pgtbl[laddr >> 12].frame + (laddr & (VDMA_PAGESIZE - 1));
 }
 
@@ -563,3 +559,141 @@ int vdma_get_enable(int channel)
 
 	return enable;
 }
+
+static void *jazz_dma_alloc(struct device *dev, size_t size,
+		dma_addr_t *dma_handle, gfp_t gfp, unsigned long attrs)
+{
+	void *ret;
+
+	ret = dma_direct_alloc(dev, size, dma_handle, gfp, attrs);
+	if (!ret)
+		return NULL;
+
+	*dma_handle = vdma_alloc(virt_to_phys(ret), size);
+	if (*dma_handle == VDMA_ERROR) {
+		dma_direct_free(dev, size, ret, *dma_handle, attrs);
+		return NULL;
+	}
+
+	if (!(attrs & DMA_ATTR_NON_CONSISTENT)) {
+		dma_cache_wback_inv((unsigned long)ret, size);
+		ret = (void *)UNCAC_ADDR(ret);
+	}
+	return ret;
+}
+
+static void jazz_dma_free(struct device *dev, size_t size, void *vaddr,
+		dma_addr_t dma_handle, unsigned long attrs)
+{
+	vdma_free(dma_handle);
+	if (!(attrs & DMA_ATTR_NON_CONSISTENT))
+		vaddr = (void *)CAC_ADDR((unsigned long)vaddr);
+	return dma_direct_free(dev, size, vaddr, dma_handle, attrs);
+}
+
+static dma_addr_t jazz_dma_map_page(struct device *dev, struct page *page,
+		unsigned long offset, size_t size, enum dma_data_direction dir,
+		unsigned long attrs)
+{
+	phys_addr_t phys = page_to_phys(page) + offset;
+
+	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
+		arch_sync_dma_for_device(dev, phys, size, dir);
+	return vdma_alloc(phys, size);
+}
+
+static void jazz_dma_unmap_page(struct device *dev, dma_addr_t dma_addr,
+		size_t size, enum dma_data_direction dir, unsigned long attrs)
+{
+	if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
+		arch_sync_dma_for_cpu(dev, vdma_log2phys(dma_addr), size, dir);
+	vdma_free(dma_addr);
+}
+
+static int jazz_dma_map_sg(struct device *dev, struct scatterlist *sglist,
+		int nents, enum dma_data_direction dir, unsigned long attrs)
+{
+	int i;
+	struct scatterlist *sg;
+
+	for_each_sg(sglist, sg, nents, i) {
+		if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
+			arch_sync_dma_for_device(dev, sg_phys(sg), sg->length,
+				dir);
+		sg->dma_address = vdma_alloc(sg_phys(sg), sg->length);
+		if (sg->dma_address == VDMA_ERROR)
+			return 0;
+		sg_dma_len(sg) = sg->length;
+	}
+
+	return nents;
+}
+
+static void jazz_dma_unmap_sg(struct device *dev, struct scatterlist *sglist,
+		int nents, enum dma_data_direction dir, unsigned long attrs)
+{
+	int i;
+	struct scatterlist *sg;
+
+	for_each_sg(sglist, sg, nents, i) {
+		if (!(attrs & DMA_ATTR_SKIP_CPU_SYNC))
+			arch_sync_dma_for_cpu(dev, sg_phys(sg), sg->length,
+				dir);
+		vdma_free(sg->dma_address);
+	}
+}
+
+static void jazz_dma_sync_single_for_device(struct device *dev,
+		dma_addr_t addr, size_t size, enum dma_data_direction dir)
+{
+	arch_sync_dma_for_device(dev, vdma_log2phys(addr), size, dir);
+}
+
+static void jazz_dma_sync_single_for_cpu(struct device *dev,
+		dma_addr_t addr, size_t size, enum dma_data_direction dir)
+{
+	arch_sync_dma_for_cpu(dev, vdma_log2phys(addr), size, dir);
+}
+
+static void jazz_dma_sync_sg_for_device(struct device *dev,
+		struct scatterlist *sgl, int nents, enum dma_data_direction dir)
+{
+	struct scatterlist *sg;
+	int i;
+
+	for_each_sg(sgl, sg, nents, i)
+		arch_sync_dma_for_device(dev, sg_phys(sg), sg->length, dir);
+}
+
+static void jazz_dma_sync_sg_for_cpu(struct device *dev,
+		struct scatterlist *sgl, int nents, enum dma_data_direction dir)
+{
+	struct scatterlist *sg;
+	int i;
+
+	for_each_sg(sgl, sg, nents, i)
+		arch_sync_dma_for_cpu(dev, sg_phys(sg), sg->length, dir);
+}
+
+static int jazz_dma_mapping_error(struct device *dev, dma_addr_t dma_addr)
+{
+	return dma_addr == VDMA_ERROR;
+}
+
+const struct dma_map_ops jazz_dma_ops = {
+	.alloc			= jazz_dma_alloc,
+	.free			= jazz_dma_free,
+	.mmap			= arch_dma_mmap,
+	.map_page		= jazz_dma_map_page,
+	.unmap_page		= jazz_dma_unmap_page,
+	.map_sg			= jazz_dma_map_sg,
+	.unmap_sg		= jazz_dma_unmap_sg,
+	.sync_single_for_cpu	= jazz_dma_sync_single_for_cpu,
+	.sync_single_for_device	= jazz_dma_sync_single_for_device,
+	.sync_sg_for_cpu	= jazz_dma_sync_sg_for_cpu,
+	.sync_sg_for_device	= jazz_dma_sync_sg_for_device,
+	.dma_supported		= dma_direct_supported,
+	.cache_sync		= arch_dma_cache_sync,
+	.mapping_error		= jazz_dma_mapping_error,
+};
+EXPORT_SYMBOL(jazz_dma_ops);

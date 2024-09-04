@@ -11,20 +11,19 @@
  */
 #include <linux/types.h>
 #include <linux/kernel.h>
-#include <linux/skbuff.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/if.h>
-#include <linux/netfilter_ipv4/ip_queue.h>
-#include <linux/tcp_diag.h>
+#include <linux/inet_diag.h>
 #include <linux/xfrm.h>
 #include <linux/audit.h>
+#include <linux/sock_diag.h>
 
 #include "flask.h"
 #include "av_permissions.h"
+#include "security.h"
 
-struct nlmsg_perm
-{
+struct nlmsg_perm {
 	u16	nlmsg_type;
 	u32	perm;
 };
@@ -60,23 +59,41 @@ static struct nlmsg_perm nlmsg_route_perms[] =
 	{ RTM_DELACTION,	NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
 	{ RTM_GETACTION,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },
 	{ RTM_NEWPREFIX,	NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
-	{ RTM_GETPREFIX,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },
 	{ RTM_GETMULTICAST,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },
 	{ RTM_GETANYCAST,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_GETNEIGHTBL,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_SETNEIGHTBL,	NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_NEWADDRLABEL,	NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_DELADDRLABEL,	NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_GETADDRLABEL,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_GETDCB,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_SETDCB,		NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_NEWNETCONF,	NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_DELNETCONF,	NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_GETNETCONF,	NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_NEWMDB,		NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_DELMDB,		NETLINK_ROUTE_SOCKET__NLMSG_WRITE  },
+	{ RTM_GETMDB,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_NEWNSID,		NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_DELNSID,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_GETNSID,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_NEWSTATS,		NETLINK_ROUTE_SOCKET__NLMSG_READ },
+	{ RTM_GETSTATS,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
+	{ RTM_NEWCACHEREPORT,	NETLINK_ROUTE_SOCKET__NLMSG_READ },
+	{ RTM_NEWCHAIN,		NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_DELCHAIN,		NETLINK_ROUTE_SOCKET__NLMSG_WRITE },
+	{ RTM_GETCHAIN,		NETLINK_ROUTE_SOCKET__NLMSG_READ  },
 };
 
-static struct nlmsg_perm nlmsg_firewall_perms[] =
-{
-	{ IPQM_MODE,		NETLINK_FIREWALL_SOCKET__NLMSG_WRITE },
-	{ IPQM_VERDICT,		NETLINK_FIREWALL_SOCKET__NLMSG_WRITE },
-};
-
-static struct nlmsg_perm nlmsg_tcpdiag_perms[] =
+static const struct nlmsg_perm nlmsg_tcpdiag_perms[] =
 {
 	{ TCPDIAG_GETSOCK,	NETLINK_TCPDIAG_SOCKET__NLMSG_READ },
+	{ DCCPDIAG_GETSOCK,	NETLINK_TCPDIAG_SOCKET__NLMSG_READ },
+	{ SOCK_DIAG_BY_FAMILY,	NETLINK_TCPDIAG_SOCKET__NLMSG_READ },
+	{ SOCK_DESTROY,		NETLINK_TCPDIAG_SOCKET__NLMSG_WRITE },
 };
 
-static struct nlmsg_perm nlmsg_xfrm_perms[] =
+static const struct nlmsg_perm nlmsg_xfrm_perms[] =
 {
 	{ XFRM_MSG_NEWSA,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
 	{ XFRM_MSG_DELSA,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
@@ -85,23 +102,46 @@ static struct nlmsg_perm nlmsg_xfrm_perms[] =
 	{ XFRM_MSG_DELPOLICY,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
 	{ XFRM_MSG_GETPOLICY,	NETLINK_XFRM_SOCKET__NLMSG_READ  },
 	{ XFRM_MSG_ALLOCSPI,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_ACQUIRE,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_EXPIRE,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
 	{ XFRM_MSG_UPDPOLICY,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
 	{ XFRM_MSG_UPDSA,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_POLEXPIRE,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_FLUSHSA,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_FLUSHPOLICY,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_NEWAE,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_GETAE,	NETLINK_XFRM_SOCKET__NLMSG_READ  },
+	{ XFRM_MSG_REPORT,	NETLINK_XFRM_SOCKET__NLMSG_READ  },
+	{ XFRM_MSG_MIGRATE,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_NEWSADINFO,	NETLINK_XFRM_SOCKET__NLMSG_READ  },
+	{ XFRM_MSG_GETSADINFO,	NETLINK_XFRM_SOCKET__NLMSG_READ  },
+	{ XFRM_MSG_NEWSPDINFO,	NETLINK_XFRM_SOCKET__NLMSG_WRITE },
+	{ XFRM_MSG_GETSPDINFO,	NETLINK_XFRM_SOCKET__NLMSG_READ  },
+	{ XFRM_MSG_MAPPING,	NETLINK_XFRM_SOCKET__NLMSG_READ  },
 };
 
-static struct nlmsg_perm nlmsg_audit_perms[] =
+static const struct nlmsg_perm nlmsg_audit_perms[] =
 {
-	{ AUDIT_GET,		NETLINK_AUDIT_SOCKET__NLMSG_READ  },
-	{ AUDIT_SET,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE },
-	{ AUDIT_LIST,		NETLINK_AUDIT_SOCKET__NLMSG_READ  },
-	{ AUDIT_ADD,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE },
-	{ AUDIT_DEL,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE },
-	{ AUDIT_USER,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE },
-	{ AUDIT_LOGIN,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE },
+	{ AUDIT_GET,		NETLINK_AUDIT_SOCKET__NLMSG_READ     },
+	{ AUDIT_SET,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE    },
+	{ AUDIT_LIST,		NETLINK_AUDIT_SOCKET__NLMSG_READPRIV },
+	{ AUDIT_ADD,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE    },
+	{ AUDIT_DEL,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE    },
+	{ AUDIT_LIST_RULES,	NETLINK_AUDIT_SOCKET__NLMSG_READPRIV },
+	{ AUDIT_ADD_RULE,	NETLINK_AUDIT_SOCKET__NLMSG_WRITE    },
+	{ AUDIT_DEL_RULE,	NETLINK_AUDIT_SOCKET__NLMSG_WRITE    },
+	{ AUDIT_USER,		NETLINK_AUDIT_SOCKET__NLMSG_RELAY    },
+	{ AUDIT_SIGNAL_INFO,	NETLINK_AUDIT_SOCKET__NLMSG_READ     },
+	{ AUDIT_TRIM,		NETLINK_AUDIT_SOCKET__NLMSG_WRITE    },
+	{ AUDIT_MAKE_EQUIV,	NETLINK_AUDIT_SOCKET__NLMSG_WRITE    },
+	{ AUDIT_TTY_GET,	NETLINK_AUDIT_SOCKET__NLMSG_READ     },
+	{ AUDIT_TTY_SET,	NETLINK_AUDIT_SOCKET__NLMSG_TTY_AUDIT	},
+	{ AUDIT_GET_FEATURE,	NETLINK_AUDIT_SOCKET__NLMSG_READ     },
+	{ AUDIT_SET_FEATURE,	NETLINK_AUDIT_SOCKET__NLMSG_WRITE    },
 };
 
 
-static int nlmsg_perm(u16 nlmsg_type, u32 *perm, struct nlmsg_perm *tab, size_t tabsize)
+static int nlmsg_perm(u16 nlmsg_type, u32 *perm, const struct nlmsg_perm *tab, size_t tabsize)
 {
 	int i, err = -EINVAL;
 
@@ -121,14 +161,14 @@ int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm)
 
 	switch (sclass) {
 	case SECCLASS_NETLINK_ROUTE_SOCKET:
+		/* RTM_MAX always points to RTM_SETxxxx, ie RTM_NEWxxx + 3.
+		 * If the BUILD_BUG_ON() below fails you must update the
+		 * structures at the top of this file with the new mappings
+		 * before updating the BUILD_BUG_ON() macro!
+		 */
+		BUILD_BUG_ON(RTM_MAX != (RTM_NEWCHAIN + 3));
 		err = nlmsg_perm(nlmsg_type, perm, nlmsg_route_perms,
 				 sizeof(nlmsg_route_perms));
-		break;
-
-	case SECCLASS_NETLINK_FIREWALL_SOCKET:
-	case NETLINK_IP6_FW:
-		err = nlmsg_perm(nlmsg_type, perm, nlmsg_firewall_perms,
-				 sizeof(nlmsg_firewall_perms));
 		break;
 
 	case SECCLASS_NETLINK_TCPDIAG_SOCKET:
@@ -137,13 +177,25 @@ int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm)
 		break;
 
 	case SECCLASS_NETLINK_XFRM_SOCKET:
+		/* If the BUILD_BUG_ON() below fails you must update the
+		 * structures at the top of this file with the new mappings
+		 * before updating the BUILD_BUG_ON() macro!
+		 */
+		BUILD_BUG_ON(XFRM_MSG_MAX != XFRM_MSG_MAPPING);
 		err = nlmsg_perm(nlmsg_type, perm, nlmsg_xfrm_perms,
 				 sizeof(nlmsg_xfrm_perms));
 		break;
 
 	case SECCLASS_NETLINK_AUDIT_SOCKET:
-		err = nlmsg_perm(nlmsg_type, perm, nlmsg_audit_perms,
-				 sizeof(nlmsg_audit_perms));
+		if ((nlmsg_type >= AUDIT_FIRST_USER_MSG &&
+		     nlmsg_type <= AUDIT_LAST_USER_MSG) ||
+		    (nlmsg_type >= AUDIT_FIRST_USER_MSG2 &&
+		     nlmsg_type <= AUDIT_LAST_USER_MSG2)) {
+			*perm = NETLINK_AUDIT_SOCKET__NLMSG_RELAY;
+		} else {
+			err = nlmsg_perm(nlmsg_type, perm, nlmsg_audit_perms,
+					 sizeof(nlmsg_audit_perms));
+		}
 		break;
 
 	/* No messaging from userspace, or class unknown/unhandled */
@@ -153,4 +205,28 @@ int selinux_nlmsg_lookup(u16 sclass, u16 nlmsg_type, u32 *perm)
 	}
 
 	return err;
+}
+
+static void nlmsg_set_getlink_perm(u32 perm)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(nlmsg_route_perms); i++) {
+		if (nlmsg_route_perms[i].nlmsg_type == RTM_GETLINK) {
+			nlmsg_route_perms[i].perm = perm;
+			break;
+		}
+	}
+}
+
+/**
+ * Use nlmsg_readpriv as the permission for RTM_GETLINK messages if the
+ * netlink_route_getlink policy capability is set. Otherwise use nlmsg_read.
+ */
+void selinux_nlmsg_init(void)
+{
+	if (selinux_android_nlroute_getlink())
+		nlmsg_set_getlink_perm(NETLINK_ROUTE_SOCKET__NLMSG_READPRIV);
+	else
+		nlmsg_set_getlink_perm(NETLINK_ROUTE_SOCKET__NLMSG_READ);
 }

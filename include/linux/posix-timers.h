@@ -1,26 +1,37 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _linux_POSIX_TIMERS_H
 #define _linux_POSIX_TIMERS_H
 
 #include <linux/spinlock.h>
 #include <linux/list.h>
 #include <linux/sched.h>
+#include <linux/timex.h>
+#include <linux/alarmtimer.h>
 
-union cpu_time_count {
-	cputime_t cpu;
-	unsigned long long sched;
-};
+struct siginfo;
 
 struct cpu_timer_list {
 	struct list_head entry;
-	union cpu_time_count expires, incr;
+	u64 expires, incr;
 	struct task_struct *task;
 	int firing;
 };
 
+/*
+ * Bit fields within a clockid:
+ *
+ * The most significant 29 bits hold either a pid or a file descriptor.
+ *
+ * Bit 2 indicates whether a cpu clock refers to a thread or a process.
+ *
+ * Bits 1 and 0 give the type: PROF=0, VIRT=1, SCHED=2, or FD=3.
+ *
+ * A clockid is invalid if bits 2, 1, and 0 are all set.
+ */
 #define CPUCLOCK_PID(clock)		((pid_t) ~((clock) >> 3))
 #define CPUCLOCK_PERTHREAD(clock) \
 	(((clock) & (clockid_t) CPUCLOCK_PERTHREAD_MASK) != 0)
-#define CPUCLOCK_PID_MASK	7
+
 #define CPUCLOCK_PERTHREAD_MASK	4
 #define CPUCLOCK_WHICH(clock)	((clock) & (clockid_t) CPUCLOCK_CLOCK_MASK)
 #define CPUCLOCK_CLOCK_MASK	3
@@ -28,112 +39,92 @@ struct cpu_timer_list {
 #define CPUCLOCK_VIRT		1
 #define CPUCLOCK_SCHED		2
 #define CPUCLOCK_MAX		3
+#define CLOCKFD			CPUCLOCK_MAX
+#define CLOCKFD_MASK		(CPUCLOCK_PERTHREAD_MASK|CPUCLOCK_CLOCK_MASK)
 
-#define MAKE_PROCESS_CPUCLOCK(pid, clock) \
-	((~(clockid_t) (pid) << 3) | (clockid_t) (clock))
-#define MAKE_THREAD_CPUCLOCK(tid, clock) \
-	MAKE_PROCESS_CPUCLOCK((tid), (clock) | CPUCLOCK_PERTHREAD_MASK)
+static inline clockid_t make_process_cpuclock(const unsigned int pid,
+		const clockid_t clock)
+{
+	return ((~pid) << 3) | clock;
+}
+static inline clockid_t make_thread_cpuclock(const unsigned int tid,
+		const clockid_t clock)
+{
+	return make_process_cpuclock(tid, clock | CPUCLOCK_PERTHREAD_MASK);
+}
 
-/* POSIX.1b interval timer structure. */
-struct k_itimer {
-	struct list_head list;		/* free/ allocate list */
-	spinlock_t it_lock;
-	clockid_t it_clock;		/* which timer type */
-	timer_t it_id;			/* timer id */
-	int it_overrun;			/* overrun on pending signal  */
-	int it_overrun_last;		/* overrun on last delivered signal */
-	int it_requeue_pending;         /* waiting to requeue this timer */
+static inline clockid_t fd_to_clockid(const int fd)
+{
+	return make_process_cpuclock((unsigned int) fd, CLOCKFD);
+}
+
+static inline int clockid_to_fd(const clockid_t clk)
+{
+	return ~(clk >> 3);
+}
+
 #define REQUEUE_PENDING 1
-	int it_sigev_notify;		/* notify word of sigevent struct */
-	int it_sigev_signo;		/* signo word of sigevent struct */
-	sigval_t it_sigev_value;	/* value word of sigevent struct */
-	struct task_struct *it_process;	/* process to send signal to */
-	struct sigqueue *sigq;		/* signal queue entry. */
+
+/**
+ * struct k_itimer - POSIX.1b interval timer structure.
+ * @list:		List head for binding the timer to signals->posix_timers
+ * @t_hash:		Entry in the posix timer hash table
+ * @it_lock:		Lock protecting the timer
+ * @kclock:		Pointer to the k_clock struct handling this timer
+ * @it_clock:		The posix timer clock id
+ * @it_id:		The posix timer id for identifying the timer
+ * @it_active:		Marker that timer is active
+ * @it_overrun:		The overrun counter for pending signals
+ * @it_overrun_last:	The overrun at the time of the last delivered signal
+ * @it_requeue_pending:	Indicator that timer waits for being requeued on
+ *			signal delivery
+ * @it_sigev_notify:	The notify word of sigevent struct for signal delivery
+ * @it_interval:	The interval for periodic timers
+ * @it_signal:		Pointer to the creators signal struct
+ * @it_pid:		The pid of the process/task targeted by the signal
+ * @it_process:		The task to wakeup on clock_nanosleep (CPU timers)
+ * @sigq:		Pointer to preallocated sigqueue
+ * @it:			Union representing the various posix timer type
+ *			internals. Also used for rcu freeing the timer.
+ */
+struct k_itimer {
+	struct list_head	list;
+	struct hlist_node	t_hash;
+	spinlock_t		it_lock;
+	const struct k_clock	*kclock;
+	clockid_t		it_clock;
+	timer_t			it_id;
+	int			it_active;
+	s64			it_overrun;
+	s64			it_overrun_last;
+	int			it_requeue_pending;
+	int			it_sigev_notify;
+	ktime_t			it_interval;
+	struct signal_struct	*it_signal;
+	union {
+		struct pid		*it_pid;
+		struct task_struct	*it_process;
+	};
+	struct sigqueue		*sigq;
 	union {
 		struct {
-			struct timer_list timer;
-			struct list_head abs_timer_entry; /* clock abs_timer_list */
-			struct timespec wall_to_prev;   /* wall_to_monotonic used when set */
-			unsigned long incr; /* interval in jiffies */
+			struct hrtimer	timer;
 		} real;
-		struct cpu_timer_list cpu;
+		struct cpu_timer_list	cpu;
 		struct {
-			unsigned int clock;
-			unsigned int node;
-			unsigned long incr;
-			unsigned long expires;
-		} mmtimer;
+			struct alarm	alarmtimer;
+		} alarm;
+		struct rcu_head		rcu;
 	} it;
 };
 
-struct k_clock_abs {
-	struct list_head list;
-	spinlock_t lock;
-};
-struct k_clock {
-	int res;		/* in nano seconds */
-	int (*clock_getres) (clockid_t which_clock, struct timespec *tp);
-	struct k_clock_abs *abs_struct;
-	int (*clock_set) (clockid_t which_clock, struct timespec * tp);
-	int (*clock_get) (clockid_t which_clock, struct timespec * tp);
-	int (*timer_create) (struct k_itimer *timer);
-	int (*nsleep) (clockid_t which_clock, int flags, struct timespec *);
-	int (*timer_set) (struct k_itimer * timr, int flags,
-			  struct itimerspec * new_setting,
-			  struct itimerspec * old_setting);
-	int (*timer_del) (struct k_itimer * timr);
-#define TIMER_RETRY 1
-	void (*timer_get) (struct k_itimer * timr,
-			   struct itimerspec * cur_setting);
-};
+void run_posix_cpu_timers(struct task_struct *task);
+void posix_cpu_timers_exit(struct task_struct *task);
+void posix_cpu_timers_exit_group(struct task_struct *task);
+void set_process_cpu_timer(struct task_struct *task, unsigned int clock_idx,
+			   u64 *newval, u64 *oldval);
 
-void register_posix_clock(clockid_t clock_id, struct k_clock *new_clock);
+void update_rlimit_cpu(struct task_struct *task, unsigned long rlim_new);
 
-/* Error handlers for timer_create, nanosleep and settime */
-int do_posix_clock_notimer_create(struct k_itimer *timer);
-int do_posix_clock_nonanosleep(clockid_t, int flags, struct timespec *);
-int do_posix_clock_nosettime(clockid_t, struct timespec *tp);
-
-/* function to call to trigger timer event */
-int posix_timer_event(struct k_itimer *timr, int si_private);
-
-struct now_struct {
-	unsigned long jiffies;
-};
-
-#define posix_get_now(now) (now)->jiffies = jiffies;
-#define posix_time_before(timer, now) \
-                      time_before((timer)->expires, (now)->jiffies)
-
-#define posix_bump_timer(timr, now)					\
-         do {								\
-              long delta, orun;						\
-	      delta = now.jiffies - (timr)->it.real.timer.expires;	\
-              if (delta >= 0) {						\
-	           orun = 1 + (delta / (timr)->it.real.incr);		\
-	          (timr)->it.real.timer.expires +=			\
-			 orun * (timr)->it.real.incr;			\
-                  (timr)->it_overrun += orun;				\
-              }								\
-            }while (0)
-
-int posix_cpu_clock_getres(clockid_t which_clock, struct timespec *);
-int posix_cpu_clock_get(clockid_t which_clock, struct timespec *);
-int posix_cpu_clock_set(clockid_t which_clock, const struct timespec *tp);
-int posix_cpu_timer_create(struct k_itimer *);
-int posix_cpu_nsleep(clockid_t, int, struct timespec *);
-int posix_cpu_timer_set(struct k_itimer *, int,
-			struct itimerspec *, struct itimerspec *);
-int posix_cpu_timer_del(struct k_itimer *);
-void posix_cpu_timer_get(struct k_itimer *, struct itimerspec *);
-
-void posix_cpu_timer_schedule(struct k_itimer *);
-
-void run_posix_cpu_timers(struct task_struct *);
-void posix_cpu_timers_exit(struct task_struct *);
-void posix_cpu_timers_exit_group(struct task_struct *);
-
-void set_process_cpu_timer(struct task_struct *, unsigned int,
-			   cputime_t *, cputime_t *);
-
+void posixtimer_rearm(struct siginfo *info);
 #endif

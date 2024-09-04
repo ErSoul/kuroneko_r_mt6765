@@ -9,7 +9,6 @@
  *  Copyright (C) 2003 Geert Uytterhoeven <geert@linux-m68k.org>
  */
 
-#include <linux/config.h>
 #include <linux/linux_logo.h>
 #include <linux/stddef.h>
 #include <linux/module.h>
@@ -18,26 +17,35 @@
 #include <asm/setup.h>
 #endif
 
-#ifdef CONFIG_MIPS
-#include <asm/bootinfo.h>
-#endif
+static bool nologo;
+module_param(nologo, bool, 0);
+MODULE_PARM_DESC(nologo, "Disables startup logo");
 
-extern const struct linux_logo logo_linux_mono;
-extern const struct linux_logo logo_linux_vga16;
-extern const struct linux_logo logo_linux_clut224;
-extern const struct linux_logo logo_dec_clut224;
-extern const struct linux_logo logo_mac_clut224;
-extern const struct linux_logo logo_parisc_clut224;
-extern const struct linux_logo logo_sgi_clut224;
-extern const struct linux_logo logo_sun_clut224;
-extern const struct linux_logo logo_superh_mono;
-extern const struct linux_logo logo_superh_vga16;
-extern const struct linux_logo logo_superh_clut224;
+/*
+ * Logos are located in the initdata, and will be freed in kernel_init.
+ * Use late_init to mark the logos as freed to prevent any further use.
+ */
 
+static bool logos_freed;
 
-const struct linux_logo *fb_find_logo(int depth)
+static int __init fb_logo_late_init(void)
+{
+	logos_freed = true;
+	return 0;
+}
+
+late_initcall_sync(fb_logo_late_init);
+
+/* logo's are marked __initdata. Use __ref to tell
+ * modpost that it is intended that this function uses data
+ * marked __initdata.
+ */
+const struct linux_logo * __ref fb_find_logo(int depth)
 {
 	const struct linux_logo *logo = NULL;
+
+	if (nologo || logos_freed)
+		return NULL;
 
 	if (depth >= 1) {
 #ifdef CONFIG_LOGO_LINUX_MONO
@@ -68,10 +76,7 @@ const struct linux_logo *fb_find_logo(int depth)
 #endif
 #ifdef CONFIG_LOGO_DEC_CLUT224
 		/* DEC Linux logo on MIPS/MIPS64 or ALPHA */
-#ifndef CONFIG_ALPHA
-		if (mips_machgroup == MACH_GROUP_DEC)
-#endif
-			logo = &logo_dec_clut224;
+		logo = &logo_dec_clut224;
 #endif
 #ifdef CONFIG_LOGO_MAC_CLUT224
 		/* Macintosh Linux logo on m68k */
@@ -83,11 +88,8 @@ const struct linux_logo *fb_find_logo(int depth)
 		logo = &logo_parisc_clut224;
 #endif
 #ifdef CONFIG_LOGO_SGI_CLUT224
-		/* SGI Linux logo on MIPS/MIPS64 and VISWS */
-#ifndef CONFIG_X86_VISWS
-		if (mips_machgroup == MACH_GROUP_SGI)
-#endif
-			logo = &logo_sgi_clut224;
+		/* SGI Linux logo on MIPS/MIPS64 */
+		logo = &logo_sgi_clut224;
 #endif
 #ifdef CONFIG_LOGO_SUN_CLUT224
 		/* Sun Linux logo */

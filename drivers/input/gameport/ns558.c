@@ -1,6 +1,4 @@
 /*
- * $Id: ns558.c,v 1.43 2002/01/24 19:23:21 vojtech Exp $
- *
  *  Copyright (c) 1999-2001 Vojtech Pavlik
  *  Copyright (c) 1999 Brian Gerst
  */
@@ -23,17 +21,12 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
- *
- * Should you need to contact me, the author, you can do so either by
- * e-mail - mail your message to <vojtech@ucw.cz>, or by paper mail:
- * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
 #include <asm/io.h>
 
 #include <linux/module.h>
 #include <linux/ioport.h>
-#include <linux/config.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/gameport.h>
@@ -142,7 +135,7 @@ static int ns558_isa_probe(int io)
 			return -EBUSY;
 	}
 
-	ns558 = kcalloc(1, sizeof(struct ns558), GFP_KERNEL);
+	ns558 = kzalloc(sizeof(struct ns558), GFP_KERNEL);
 	port = gameport_allocate_port();
 	if (!ns558 || !port) {
 		printk(KERN_ERR "ns558: Memory allocation failed.\n");
@@ -152,7 +145,6 @@ static int ns558_isa_probe(int io)
 		return -ENOMEM;
 	}
 
-	memset(ns558, 0, sizeof(struct ns558));
 	ns558->io = io;
 	ns558->size = 1 << i;
 	ns558->gameport = port;
@@ -170,7 +162,7 @@ static int ns558_isa_probe(int io)
 
 #ifdef CONFIG_PNP
 
-static struct pnp_device_id pnp_devids[] = {
+static const struct pnp_device_id pnp_devids[] = {
 	{ .id = "@P@0001", .driver_data = 0 }, /* ALS 100 */
 	{ .id = "@P@0020", .driver_data = 0 }, /* ALS 200 */
 	{ .id = "@P@1001", .driver_data = 0 }, /* ALS 100+ */
@@ -215,7 +207,7 @@ static int ns558_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id *did)
 	if (!request_region(ioport, iolen, "ns558-pnp"))
 		return -EBUSY;
 
-	ns558 = kcalloc(1, sizeof(struct ns558), GFP_KERNEL);
+	ns558 = kzalloc(sizeof(struct ns558), GFP_KERNEL);
 	port = gameport_allocate_port();
 	if (!ns558 || !port) {
 		printk(KERN_ERR "ns558: Memory allocation failed\n");
@@ -230,7 +222,7 @@ static int ns558_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id *did)
 	ns558->gameport = port;
 
 	gameport_set_name(port, "NS558 PnP Gameport");
-	gameport_set_phys(port, "pnp%s/gameport0", dev->dev.bus_id);
+	gameport_set_phys(port, "pnp%s/gameport0", dev_name(&dev->dev));
 	port->dev.parent = &dev->dev;
 	port->io = ioport;
 
@@ -252,39 +244,38 @@ static struct pnp_driver ns558_pnp_driver;
 
 #endif
 
-static int pnp_registered = 0;
-
 static int __init ns558_init(void)
 {
 	int i = 0;
+	int error;
+
+	error = pnp_register_driver(&ns558_pnp_driver);
+	if (error && error != -ENODEV)	/* should be ENOSYS really */
+		return error;
 
 /*
- * Probe ISA ports first so that PnP gets to choose free port addresses
- * not occupied by the ISA ports.
+ * Probe ISA ports after PnP, so that PnP ports that are already
+ * enabled get detected as PnP. This may be suboptimal in multi-device
+ * configurations, but saves hassle with simple setups.
  */
 
 	while (ns558_isa_portlist[i])
 		ns558_isa_probe(ns558_isa_portlist[i++]);
 
-	if (pnp_register_driver(&ns558_pnp_driver) >= 0)
-		pnp_registered = 1;
-
-
-	return (list_empty(&ns558_list) && !pnp_registered) ? -ENODEV : 0;
+	return list_empty(&ns558_list) && error ? -ENODEV : 0;
 }
 
 static void __exit ns558_exit(void)
 {
-	struct ns558 *ns558;
+	struct ns558 *ns558, *safe;
 
-	list_for_each_entry(ns558, &ns558_list, node) {
+	list_for_each_entry_safe(ns558, safe, &ns558_list, node) {
 		gameport_unregister_port(ns558->gameport);
 		release_region(ns558->io & ~(ns558->size - 1), ns558->size);
 		kfree(ns558);
 	}
 
-	if (pnp_registered)
-		pnp_unregister_driver(&ns558_pnp_driver);
+	pnp_unregister_driver(&ns558_pnp_driver);
 }
 
 module_init(ns558_init);

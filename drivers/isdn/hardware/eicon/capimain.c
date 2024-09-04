@@ -2,19 +2,19 @@
  *
  * ISDN interface module for Eicon active cards DIVA.
  * CAPI Interface
- * 
- * Copyright 2000-2003 by Armin Schindler (mac@melware.de) 
+ *
+ * Copyright 2000-2003 by Armin Schindler (mac@melware.de)
  * Copyright 2000-2003 Cytronics & Melware (info@melware.de)
- * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  */
 
-#include <linux/config.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/init.h>
-#include <asm/uaccess.h>
-#include <linux/smp_lock.h>
+#include <linux/uaccess.h>
+#include <linux/seq_file.h>
 #include <linux/skbuff.h>
 
 #include "os_capi.h"
@@ -28,7 +28,7 @@
 
 static char *main_revision = "$Revision: 1.24 $";
 static char *DRIVERNAME =
-    "Eicon DIVA - CAPI Interface driver (http://www.melware.net)";
+	"Eicon DIVA - CAPI Interface driver (http://www.melware.net)";
 static char *DRIVERLNAME = "divacapi";
 
 MODULE_DESCRIPTION("CAPI driver for Eicon DIVA cards");
@@ -69,7 +69,7 @@ diva_os_message_buffer_s *diva_os_alloc_message_buffer(unsigned long size,
 /*
  * free a message buffer
  */
-void diva_os_free_message_buffer(diva_os_message_buffer_s * dmb)
+void diva_os_free_message_buffer(diva_os_message_buffer_s *dmb)
 {
 	kfree_skb(dmb);
 }
@@ -77,23 +77,17 @@ void diva_os_free_message_buffer(diva_os_message_buffer_s * dmb)
 /*
  * proc function for controller info
  */
-static int diva_ctl_read_proc(char *page, char **start, off_t off,
-			      int count, int *eof, struct capi_ctr *ctrl)
+static int diva_ctl_proc_show(struct seq_file *m, void *v)
 {
+	struct capi_ctr *ctrl = m->private;
 	diva_card *card = (diva_card *) ctrl->driverdata;
-	int len = 0;
 
-	len += sprintf(page + len, "%s\n", ctrl->name);
-	len += sprintf(page + len, "Serial No. : %s\n", ctrl->serial);
-	len += sprintf(page + len, "Id         : %d\n", card->Id);
-	len += sprintf(page + len, "Channels   : %d\n", card->d.channels);
+	seq_printf(m, "%s\n", ctrl->name);
+	seq_printf(m, "Serial No. : %s\n", ctrl->serial);
+	seq_printf(m, "Id         : %d\n", card->Id);
+	seq_printf(m, "Channels   : %d\n", card->d.channels);
 
-	if (off + count >= len)
-		*eof = 1;
-	if (len < off)
-		return 0;
-	*start = page + off;
-	return ((count < len - off) ? count : len - off);
+	return 0;
 }
 
 /*
@@ -104,14 +98,14 @@ void diva_os_set_controller_struct(struct capi_ctr *ctrl)
 	ctrl->driver_name = DRIVERLNAME;
 	ctrl->load_firmware = NULL;
 	ctrl->reset_ctr = NULL;
-	ctrl->ctr_read_proc = diva_ctl_read_proc;
+	ctrl->proc_show = diva_ctl_proc_show;
 	ctrl->owner = THIS_MODULE;
 }
 
 /*
  * module init
  */
-static int DIVA_INIT_FUNCTION divacapi_init(void)
+static int __init divacapi_init(void)
 {
 	char tmprev[32];
 	int ret = 0;
@@ -137,7 +131,7 @@ static int DIVA_INIT_FUNCTION divacapi_init(void)
 /*
  * module exit
  */
-static void DIVA_EXIT_FUNCTION divacapi_exit(void)
+static void __exit divacapi_exit(void)
 {
 	finit_capifunc();
 	printk(KERN_INFO "%s: module unloaded.\n", DRIVERLNAME);
